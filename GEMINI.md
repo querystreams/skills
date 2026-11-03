@@ -18,6 +18,7 @@ or the schema. This organization's schema is the truth; your prior knowledge of 
    column means. This is the step that gets skipped, and skipping it is where almost every failed query comes from.
 4. `qs_run_query` — the SELECT.
 
+Each database's `si_state` on the connector list tells you how much Semantic Intelligence has run on it.
 When a database is marked `schema_intelligence`, the table schema carries curated descriptions, semantic types
 and sample values — trust them as given. `captured_schema` is bare structure; `live_schema` means the database
 is not captured, so the tool reads names and types off the live database for you. In all three cases the
@@ -154,5 +155,7 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
 - Retry the same failing statement.
 - Loop on an offline agent or an exhausted allowance.
 - Present a truncated or sampled result as exact.
+- Rely on a remembered list of connectors, databases or tables — `qs_list_connectors` and the schema tools are
+  the only current source.
 
-<!-- querystreams-playbook v2026.11.03 -->
+<!-- querystreams-playbook v2026.11.03.1 -->
