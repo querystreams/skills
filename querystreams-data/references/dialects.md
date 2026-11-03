@@ -12,3 +12,4 @@ Dialect reminders by engine (the connector row tells you the engine):
 | BigQuery | `LIMIT n` | `` `project.dataset.table` `` | fully qualified tables; `SAFE_CAST`; partition filters may be required |
 | SQLite / DuckDB | `LIMIT n` | `"name"` | DuckDB: `::type`; SQLite: loose typing |
 | Microsoft Access | `SELECT TOP n …` | `[name]` | `IIf()` not `CASE`; `#date#` literals; `&` concat |
+| File sets & API connectors | `LIMIT n` | `"name"` | each file or API object is a table; standard analytical SQL (CTEs, window functions, `QUALIFY`); read the table schema — field names come from the source, not from the API's docs |

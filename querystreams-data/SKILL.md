@@ -16,8 +16,8 @@ or the schema. This organization's schema is the truth; your prior knowledge of 
 
 1. `qs_list_connectors` — the connectors and databases you may query, each with its `connection_state` and
    `si_state`. Every database listed is queryable, whatever its capture state.
-2. `qs_get_connector_schema` — the tables of one database. `detail=domains` groups them by business area;
-   it does **not** return columns.
+2. `qs_get_connector_schema` — the tables of one database (`detail=domains` groups them by business area;
+   large databases page). It does **not** return columns.
 3. `qs_get_table_schema` — once for **each table** you are about to put in SQL. It returns the exact column
    names, types, keys, allowed values and, where Semantic Intelligence has run, a description of what each
    column means. This is the step that gets skipped, and skipping it is where almost every failed query comes from.
@@ -52,11 +52,16 @@ Dialect reminders by engine (the connector row tells you the engine):
 | BigQuery | `LIMIT n` | `` `project.dataset.table` `` | fully qualified tables; `SAFE_CAST`; partition filters may be required |
 | SQLite / DuckDB | `LIMIT n` | `"name"` | DuckDB: `::type`; SQLite: loose typing |
 | Microsoft Access | `SELECT TOP n …` | `[name]` | `IIf()` not `CASE`; `#date#` literals; `&` concat |
+| File sets & API connectors | `LIMIT n` | `"name"` | each file or API object is a table; standard analytical SQL (CTEs, window functions, `QUALIFY`); read the table schema — field names come from the source, not from the API's docs |
 
 ## 3. Reading a result
 
 - `is_truncated` true and `truncated_by` tell you rows were left out and why. Say so to the user; do not
   present a partial result as complete.
+- Shape the reply before you ask for it: `columns` returns only the columns you need, `max_tokens` bounds the
+  reply to what your context can hold, `max_cell_chars` trims long text cells. Smaller replies cost less of the
+  allowance and leave room for the answer. (Plans with **Context management**; on other plans the inputs are
+  refused with `MCP_FEATURE_NOT_INCLUDED` — carry on without them.)
 - `data_source` on every reply names the tier that answered (`schema_intelligence`, `captured_schema`,
   `live_schema`). Mention it only when it changes what the user should trust.
 - Prefer aggregates in SQL over pulling rows and summing them yourself; it is faster, exact, and costs less allowance.
@@ -64,28 +69,58 @@ Dialect reminders by engine (the connector row tells you the engine):
 ## 4. When the result is big, or the user will ask follow-ups
 
 On plans with **Result analysis**, add `hold=true` to `qs_run_query` or `qs_run_saved_query`. The Network Agent
-keeps the complete result ready for a limited time, and every follow-up question is answered from that copy
-with `qs_result` — never by running the database query again:
+keeps the **complete** result — every row, not the preview you were shown — in a local analytical engine next to
+the data, for a limited time. From then on you have a second database that costs the customer's server nothing:
+every follow-up is answered from the held copy with `qs_result`, never by running the source query again, and only
+the small answer travels to you (so it barely touches the data allowance).
 
-- `qs_result op=query` — a SELECT over the held result (filter, group, join two held results).
-- `op=page` / `op=sample` — browse or sample it.
-- `op=windows` lists what is held; `qs_result_release` frees one when you are done.
-- `group_by` + `aggregate` with `hold=true` returns totals in the same call as the hold.
+The working pattern: ask the source database **once**, broadly (`hold=true`, the rows you might need, no
+premature aggregation), then slice, rank, pivot and compare locally for the rest of the conversation.
 
-On **Deeper analysis** plans, `qs_result op=anomalies | segments | compare | diff` analyse a held result or
-two held results. Reach for them before writing your own statistics.
+- `qs_result op=query` — full analytical SQL over held results: `GROUP BY`, window functions (`ROW_NUMBER`,
+  `LAG`, running totals), CTEs, `QUALIFY`, percentiles, date bucketing, and **joins between two held results**
+  — even when they came from different databases or different engines. One read-only SELECT per call; the
+  held results are the only tables.
+- `op=page` / `op=sample` — browse or sample it when the user wants to see rows.
+- `op=windows` lists what is held and for how long; `qs_result_release` frees one you have finished with.
+- `group_by` + `aggregate` with `hold=true` returns the totals in the same call as the hold — one round trip
+  for "give me the breakdown and keep the detail."
 
-A follow-up that comes back `MCP_RESULT_EXPIRED` means the result is no longer held; run the query again with `hold=true`.
+On **Deeper analysis** plans the engine also runs four analyses for you — reach for them before writing your own
+statistics: `qs_result op=anomalies` (values and periods that break the pattern), `op=segments` (natural groups
+in the data), `op=compare` (two held results side by side, statistically), `op=diff` (what changed between two
+runs of the same query).
+
+A follow-up that comes back `MCP_RESULT_EXPIRED` means the result is no longer held; run the source query again
+with `hold=true`. `MCP_WINDOW_SQL_REJECTED` means the follow-up was not one read-only SELECT over held results.
 
 ## 5. Understanding a table before querying it
 
 - `qs_profile_table` — distributions, null rates, distinct counts and sample values for one table (stored answer
   with the Read scope; a fresh profile needs Analyze and spends the organization's credits — ask before forcing it).
+- `qs_run_query` with `mode=profile` profiles the *result* of a query instead of a whole table; `mode=quality`
+  returns a data-quality report (nulls, duplicates, outliers) — statistics, not rows. Both belong to plans with
+  **Result analysis**.
 - `qs_get_relationships` — the joins between tables, formal keys first, then discovered ones with a confidence.
-  Use it instead of guessing join columns.
+  Use it instead of guessing join columns. `qs_discover_relationships` runs a fresh discovery when none are
+  recorded (Analyze scope; it does work on the database, so ask first).
 - `qs_data_freshness` — the newest timestamp in a table; pass it back as `since_value` on `qs_run_query` to read
   only what changed.
-- `qs_get_si_status` — whether Semantic Intelligence has run on a database and how complete it is.
+
+### Semantic Intelligence
+
+`qs_get_si_status` tells you whether Semantic Intelligence has run on a database and how complete it is. When a
+database answers `captured_schema` (structure only) or `not_captured`, the descriptions, semantic types and
+enum values that make your SQL right first time are missing. If the key carries the **Analyze** scope:
+
+- `qs_setup_si` captures the database and queues the analysis; `qs_request_si_analysis` re-runs it for tables
+  that changed. Both spend the organization's AI credits and data allowance — tell the user what will run and
+  get a yes before calling them.
+- `qs_get_task_status` follows the queued task; analysis takes minutes, so answer the current question from
+  the live schema and offer to continue once it finishes.
+
+Without Analyze, say once that an administrator can run Semantic Intelligence from Query Streams and continue
+with the live schema.
 
 ## 6. Repeating questions
 
@@ -93,6 +128,8 @@ A follow-up that comes back `MCP_RESULT_EXPIRED` means the result is no longer h
   included. A question that comes back weekly belongs here, not in ad-hoc SQL.
 - `qs_alerts op=rules | state | recent` reads alert rules and their state; `qs_create_alert_rule` proposes one
   (always a dry run — a person confirms it in Query Streams).
+- `qs_list_organizations` and `qs_list_agents` — for keys that span several organizations, or to see which
+  Network Agent is online before a long query.
 
 ## 7. When something goes wrong
 
@@ -123,4 +160,4 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
 - Loop on an offline agent or an exhausted allowance.
 - Present a truncated or sampled result as exact.
 
-<!-- querystreams-playbook v2026.11.02 -->
+<!-- querystreams-playbook v2026.11.03 -->
