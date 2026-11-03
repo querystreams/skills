@@ -136,19 +136,61 @@ with the live schema.
 | `MCP_AGENT_NOT_CONNECTED` / `unstable` | the Network Agent is offline or reconnecting | tell the user; do not retry in a loop |
 | `MCP_QUERY_TIMEOUT` | the query ran past its time limit | narrow it (WHERE, fewer columns) or size it with `mode=shape` |
 | `MCP_FEATURE_NOT_INCLUDED` | the plan does not include that capability | continue without it and tell the user once what it would add |
+| `MCP_SCOPE_REQUIRED` / `MCP_CONNECTOR_NOT_ALLOWED` | the key lacks that permission, or the connector is outside the app's approved set | tell the user which permission or connector to add; never work around it |
 | `MCP_DATA_REALM_EXHAUSTED` / `MCP_USER_BYTES_CAP` / `MCP_USER_CALL_CAP` | the allowance or a cap is used up | stop and tell the user once; the message says how to raise it |
 | `MCP_RATE_LIMITED` | too many calls this minute | wait for `retry_after`, then continue |
 | `MCP_OUTPUT_TOO_LARGE` | one reply would exceed the plan's size cap | fewer columns or rows, or `hold=true` and query the held result |
 
 Never retry an identical failing query. Every refusal already tells you what to change.
 
-## 8. The data allowance
+## 8. What your key is allowed to do
+
+Every key or connected app carries up to three permissions, chosen by the person who created it. Nothing
+writes to a database under any of them — the Network Agent accepts SELECT only.
+
+| Permission | Lets you | Tools |
+|---|---|---|
+| **Read** (always on) | browse connectors, schemas, relationships, saved queries and alert rules — no row data | the list / schema / `qs_get_*` tools, `qs_result op=windows`, `qs_alerts` |
+| **Run queries** (`execute`) | run SELECTs and saved queries, hold results and query them, read freshness, propose an alert rule | `qs_run_query`, `qs_run_saved_query`, `qs_result`, `qs_data_freshness`, `qs_create_alert_rule` |
+| **Analyze** | start work that spends the organization's resources: Semantic Intelligence runs, fresh profiles, relationship discovery | `qs_setup_si`, `qs_request_si_analysis`, `qs_get_task_status`, `qs_profile_table` / `qs_discover_relationships` with `force_refresh` |
+
+- `MCP_SCOPE_REQUIRED` means the key lacks the permission for that tool. Do not retry or look for a workaround:
+  tell the user which permission it needs and that the key's owner can add it on the Query Streams MCP page
+  (a connected app has to be approved again with the extra permission).
+- A connected app may also be limited to specific connectors; a connector that is not listed for you is not
+  missing, it is out of scope (`MCP_CONNECTOR_NOT_ALLOWED`).
+- Analyze is deliberately optional because its tools spend credits and allowance without a person in the loop —
+  that is why this playbook says to confirm with the user before calling them.
+
+## 9. The data allowance
 
 Every reply — rows, schema reads and held-result pages — counts against the organization's data allowance.
 Keep exploratory questions small, prefer one aggregate over many row pulls, and answer follow-ups from a held
 result instead of re-running. When a reply carries a `capacity_low` note, pass it on to the user once.
 
-## 9. Do not
+## 10. Gotchas — facts that defy reasonable assumptions
+
+- A connector's *default* database is often a system one (`master` on SQL Server): always pass the `database`
+  you mean; `qs_list_connectors` lists them.
+- `qs_get_connector_schema` returns tables, never columns — only `qs_get_table_schema` does, and it is the only
+  reliable source of column names and case. Names that look obvious from a vendor's documentation are the ones
+  that fail.
+- `si_state = not_captured` on a database is not an error: the schema tools answer from the live database
+  (`live_schema`); `qs_get_si_status` / `qs_get_relationships` answer `MCP_DATABASE_NOT_CAPTURED` there by design.
+- The row count you get is the plan's limit, not the table's size; `preview_limit_clamped` tells you it was
+  clamped. Use `mode=shape` or an aggregate for the real figure.
+- The preview you see is not the held result: with `hold=true` the Network Agent keeps **every** row, so
+  `qs_result op=query` can aggregate over the full set even when the reply showed 1,000.
+- Held results expire on a timer (minutes, longer on bigger plans) and are released when the Network Agent
+  restarts; `MCP_RESULT_EXPIRED` means re-run with `hold=true`, not that anything is broken.
+- Error messages already carry the fix: `unknown_column` lists the real columns, a wrong table lists similar
+  names, `MCP_RATE_LIMITED` gives `retry_after`. Read them before retrying.
+- `qs_create_alert_rule` is always a dry run; `qs_setup_si`, `qs_request_si_analysis` and a forced
+  `qs_profile_table` spend the organization's credits — confirm with the user first.
+- Every reply is billed to the organization's data allowance, including schema reads and held-result pages;
+  errors are not.
+
+## 11. Do not
 
 - Guess a column or table name — read the table schema.
 - Pull a whole table to count or sum it — aggregate in SQL.
@@ -158,4 +200,4 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
 - Rely on a remembered list of connectors, databases or tables — `qs_list_connectors` and the schema tools are
   the only current source.
 
-<!-- querystreams-playbook v2026.11.03.1 -->
+<!-- querystreams-playbook v2026.11.03.3 -->
