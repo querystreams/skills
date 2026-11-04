@@ -4,7 +4,7 @@ description: Use this skill whenever Query Streams MCP tools (qs_list_connectors
 compatibility: Requires a Query Streams MCP connection (https://mcp.querystreams.com/mcp) with at least the Read and Run scopes.
 metadata:
   author: querystreams
-  version: "2026.11.03.3"
+  version: "2026.11.04"
   homepage: https://querystreams.com/docs/
 ---
 
@@ -50,7 +50,7 @@ Dialect reminders by engine (the connector row tells you the engine):
 
 | Engine | Row limit | Identifier quoting | Watch out for |
 |---|---|---|---|
-| SQL Server | `SELECT TOP n …` (after `DISTINCT` if present); `OFFSET … FETCH` needs `ORDER BY` | `[name]` | no `LIMIT`; `GETDATE()`; string concat `+` |
+| SQL Server | `SELECT TOP n …` (after `DISTINCT` if present); `OFFSET … FETCH` needs `ORDER BY` | `[name]` | no `LIMIT`; `GETDATE()`; string concat `+`; window functions, `PERCENTILE_CONT` and `STRING_AGG` depend on the database's compatibility level — on an older database fall back to `ROW_NUMBER()` / `FOR XML PATH`, or compute them over a held result |
 | PostgreSQL | `LIMIT n` | `"name"` (case-sensitive when quoted) | `::type` casts; `NOW()`; `ILIKE` |
 | MySQL / MariaDB | `LIMIT n` | `` `name` `` | `NOW()`; `CONCAT()`; backticks not double quotes |
 | Oracle | `FETCH FIRST n ROWS ONLY` | `"NAME"` (upper-case unless quoted at creation) | no `LIMIT`/`TOP`; `SYSDATE`; `FROM DUAL` for scalar selects |
@@ -103,13 +103,16 @@ with `hold=true`. `MCP_WINDOW_SQL_REJECTED` means the follow-up was not one read
 ## 5. Understanding a table before querying it
 
 - `qs_profile_table` — distributions, null rates, distinct counts and sample values for one table (stored answer
-  with the Read scope; a fresh profile needs Analyze and spends the organization's credits — ask before forcing it).
+  with the Read scope; a fresh profile needs Analyze. The profiling work is free: it spends no credits and no
+  allowance; only the reply's bytes count, like every reply. It still runs on the customer's database, so ask
+  before forcing it).
 - `qs_run_query` with `mode=profile` profiles the *result* of a query instead of a whole table; `mode=quality`
   returns a data-quality report (nulls, duplicates, outliers) — statistics, not rows. Both belong to plans with
   **Result analysis**.
 - `qs_get_relationships` — the joins between tables, formal keys first, then discovered ones with a confidence.
   Use it instead of guessing join columns. `qs_discover_relationships` runs a fresh discovery when none are
-  recorded (Analyze scope; it does work on the database, so ask first).
+  recorded (Analyze scope; the discovery is free, no credits and no allowance, but it does work on the database,
+  so ask first).
 - `qs_data_freshness` — the newest timestamp in a table; pass it back as `since_value` on `qs_run_query` to read
   only what changed.
 
@@ -162,15 +165,16 @@ writes to a database under any of them — the Network Agent accepts SELECT only
 |---|---|---|
 | **Read** (always on) | browse connectors, schemas, relationships, saved queries and alert rules — no row data | the list / schema / `qs_get_*` tools, `qs_result op=windows`, `qs_alerts` |
 | **Run queries** (`execute`) | run SELECTs and saved queries, hold results and query them, read freshness, propose an alert rule | `qs_run_query`, `qs_run_saved_query`, `qs_result`, `qs_data_freshness`, `qs_create_alert_rule` |
-| **Analyze** | start work that spends the organization's resources: Semantic Intelligence runs, fresh profiles, relationship discovery | `qs_setup_si`, `qs_request_si_analysis`, `qs_get_task_status`, `qs_profile_table` / `qs_discover_relationships` with `force_refresh` |
+| **Analyze** | start work on the organization's databases: Semantic Intelligence runs (these spend credits and allowance), fresh profiles and relationship discovery (free) | `qs_setup_si`, `qs_request_si_analysis`, `qs_get_task_status`, `qs_profile_table` / `qs_discover_relationships` with `force_refresh` |
 
 - `MCP_SCOPE_REQUIRED` means the key lacks the permission for that tool. Do not retry or look for a workaround:
   tell the user which permission it needs and that the key's owner can add it on the Query Streams MCP page
   (a connected app has to be approved again with the extra permission).
 - A connected app may also be limited to specific connectors; a connector that is not listed for you is not
   missing, it is out of scope (`MCP_CONNECTOR_NOT_ALLOWED`).
-- Analyze is deliberately optional because its tools spend credits and allowance without a person in the loop —
-  that is why this playbook says to confirm with the user before calling them.
+- Analyze is deliberately optional because its tools start work on the organization's databases without a
+  person in the loop, and Semantic Intelligence runs spend credits and allowance — that is why this playbook
+  says to confirm with the user before calling them.
 
 ## 9. The data allowance
 
@@ -195,8 +199,10 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
   restarts; `MCP_RESULT_EXPIRED` means re-run with `hold=true`, not that anything is broken.
 - Error messages already carry the fix: `unknown_column` lists the real columns, a wrong table lists similar
   names, `MCP_RATE_LIMITED` gives `retry_after`. Read them before retrying.
-- `qs_create_alert_rule` is always a dry run; `qs_setup_si`, `qs_request_si_analysis` and a forced
-  `qs_profile_table` spend the organization's credits — confirm with the user first.
+- `qs_create_alert_rule` is always a dry run; `qs_setup_si` and `qs_request_si_analysis` spend the
+  organization's credits and allowance — confirm with the user first. A forced `qs_profile_table` or
+  `qs_discover_relationships` is free (no credits, no allowance; only the reply's bytes count) but still runs
+  on the customer's database, so ask first too.
 - Every reply is billed to the organization's data allowance, including schema reads and held-result pages;
   errors are not.
 
@@ -210,4 +216,4 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
 - Rely on a remembered list of connectors, databases or tables — `qs_list_connectors` and the schema tools are
   the only current source.
 
-<!-- querystreams-playbook v2026.11.03.3 -->
+<!-- querystreams-playbook v2026.11.04 -->
