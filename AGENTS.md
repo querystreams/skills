@@ -10,7 +10,10 @@ Follow this order on every new database, every session — even when you believe
 or the schema. This organization's schema is the truth; your prior knowledge of a vendor's data model is not.
 
 1. `qs_list_connectors` — the connectors and databases you may query, each with its `connection_state` and
-   `si_state`. Every database listed is queryable, whatever its capture state.
+   `si_state`. Every database listed is queryable, whatever its capture state. An API connector (Stripe,
+   Shopify, HubSpot, YouTube…) whose database carries `sync_state: initial_sync_running` or
+   `waiting_on_provider` is still filling its tables from the vendor's API: an empty or short result there
+   means "not synced yet", not "no data" — say so, and offer to retry once the sync has finished.
 2. `qs_get_connector_schema` — the tables of one database (`detail=domains` groups them by business area;
    large databases page). It does **not** return columns.
 3. `qs_get_table_schema` — once for **each table** you are about to put in SQL. It returns the exact column
@@ -117,6 +120,8 @@ enum values that make your SQL right first time are missing. If the key carries 
   get a yes before calling them.
 - `qs_get_task_status` follows the queued task; analysis takes minutes, so answer the current question from
   the live schema and offer to continue once it finishes.
+- On an API connector that has not finished its first data sync, both answer `MCP_FIRST_SYNC_PENDING`
+  (409): there is nothing to analyse yet. Wait for `sync_state` on the connector list to clear, then call again.
 
 Without Analyze, say once that an administrator can run Semantic Intelligence from Query Streams and continue
 with the live schema.
@@ -206,4 +211,4 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
 - Rely on a remembered list of connectors, databases or tables — `qs_list_connectors` and the schema tools are
   the only current source.
 
-<!-- querystreams-playbook v2026.11.04 -->
+<!-- querystreams-playbook v2026.11.04.1 -->

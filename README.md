@@ -14,4 +14,4 @@ write SQL that runs first time on your engine, and use held results and analysis
 **Streams → Live → MCP → Connections → Teach your AI client**. The version there may list only the database engines
 you actually use.
 
-Version 2026.11.04. Generated from one source; edits here are overwritten on the next release.
+Version 2026.11.04.1. Generated from one source; edits here are overwritten on the next release.
