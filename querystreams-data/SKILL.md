@@ -1,10 +1,10 @@
 ---
 name: querystreams-data
-description: Use this skill whenever Query Streams MCP tools (qs_list_connectors, qs_get_table_schema, qs_run_query, qs_result, qs_profile_table, Semantic Intelligence) are available and the user wants to query, analyze, report on, reconcile or explore their business data — sales, inventory, finance, ERP or CRM tables, spreadsheets, file sets or API connectors — even if they never say SQL, database or Query Streams. It teaches reading the real schema before writing SQL, per-engine dialect rules, held results and follow-up analysis, data freshness, saved queries and alerts, and what each refusal code means. Not for designing or administering databases, or for data that is not connected to Query Streams.
+description: Use this skill whenever Query Streams MCP tools (qs_list_connectors, qs_find_tables, qs_get_table_schema, qs_run_query, qs_result, qs_profile_table, Semantic Intelligence) are available and the user wants to query, analyze, report on, reconcile or explore their business data — sales, inventory, finance, ERP or CRM tables, spreadsheets, file sets or API connectors — even if they never say SQL, database or Query Streams. It teaches reading the real schema before writing SQL, per-engine dialect rules, held results and follow-up analysis, data freshness, saved queries and alerts, and what each refusal code means. Not for designing or administering databases, or for data that is not connected to Query Streams.
 compatibility: Requires a Query Streams MCP connection (https://mcp.querystreams.com/mcp) with at least the Read and Run scopes.
 metadata:
   author: querystreams
-  version: "2026.11.04.1"
+  version: "2026.11.06.1"
   homepage: https://querystreams.com/docs/
 ---
 
@@ -25,7 +25,10 @@ or the schema. This organization's schema is the truth; your prior knowledge of 
    `waiting_on_provider` is still filling its tables from the vendor's API: an empty or short result there
    means "not synced yet", not "no data" — say so, and offer to retry once the sync has finished.
 2. `qs_get_connector_schema` — the tables of one database (`detail=domains` groups them by business area;
-   large databases page). It does **not** return columns.
+   large databases page). It does **not** return columns. When you know what you need but not the table's
+   name — on any database above 40 tables, this is the normal case — call `qs_find_tables` with a few words,
+   a question or part of a name (any language): it returns the ranked tables with why each matched and the
+   exact `qs_get_table_schema` call for the top hit. Search, do not page.
 3. `qs_get_table_schema` — once for **each table** you are about to put in SQL. It returns the exact column
    names, types, keys, allowed values and, where Semantic Intelligence has run, a description of what each
    column means. This is the step that gets skipped, and skipping it is where almost every failed query comes from.
@@ -168,7 +171,7 @@ writes to a database under any of them — the Network Agent accepts SELECT only
 
 | Permission | Lets you | Tools |
 |---|---|---|
-| **Read** (always on) | browse connectors, schemas, relationships, saved queries and alert rules — no row data | the list / schema / `qs_get_*` tools, `qs_result op=windows`, `qs_alerts` |
+| **Read** (always on) | browse connectors, schemas, relationships, saved queries and alert rules — no row data | the list / schema / `qs_get_*` tools, `qs_find_tables`, `qs_result op=windows`, `qs_alerts` |
 | **Run queries** (`execute`) | run SELECTs and saved queries, hold results and query them, read freshness, propose an alert rule | `qs_run_query`, `qs_run_saved_query`, `qs_result`, `qs_data_freshness`, `qs_create_alert_rule` |
 | **Analyze** | start work on the organization's databases: Semantic Intelligence runs (these spend credits and allowance), fresh profiles and relationship discovery (free) | `qs_setup_si`, `qs_request_si_analysis`, `qs_get_task_status`, `qs_profile_table` / `qs_discover_relationships` with `force_refresh` |
 
@@ -194,6 +197,10 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
 - `qs_get_connector_schema` returns tables, never columns — only `qs_get_table_schema` does, and it is the only
   reliable source of column names and case. Names that look obvious from a vendor's documentation are the ones
   that fail.
+- Which schema tool: a table name you already know goes to `qs_get_table_schema`; browsing a small database
+  goes to `qs_get_connector_schema`; a need whose table name you do not know goes to `qs_find_tables`. Querying
+  the catalogue (INFORMATION_SCHEMA, sys.*, pg_catalog) returns bare structure and costs allowance; the schema
+  tools return columns, keys and descriptions in one call.
 - `si_state = not_captured` on a database is not an error: the schema tools answer from the live database
   (`live_schema`); `qs_get_si_status` / `qs_get_relationships` answer `MCP_DATABASE_NOT_CAPTURED` there by design.
 - The row count you get is the plan's limit, not the table's size; `preview_limit_clamped` tells you it was
@@ -221,4 +228,4 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
 - Rely on a remembered list of connectors, databases or tables — `qs_list_connectors` and the schema tools are
   the only current source.
 
-<!-- querystreams-playbook v2026.11.04.1 -->
+<!-- querystreams-playbook v2026.11.06.1 -->
