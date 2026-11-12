@@ -4,7 +4,7 @@ description: Use this skill whenever Query Streams MCP tools (qs_list_connectors
 compatibility: Requires a Query Streams MCP connection (https://mcp.querystreams.com/mcp) with at least the Read and Run scopes.
 metadata:
   author: querystreams
-  version: "2026.11.06.1"
+  version: "2026.11.12.1"
   homepage: https://querystreams.com/docs/
 ---
 
@@ -30,15 +30,18 @@ or the schema. This organization's schema is the truth; your prior knowledge of 
    a question or part of a name (any language): it returns the ranked tables with why each matched and the
    exact `qs_get_table_schema` call for the top hit. Search, do not page.
 3. `qs_get_table_schema` — once for **each table** you are about to put in SQL. It returns the exact column
-   names, types, keys, allowed values and, where Semantic Intelligence has run, a description of what each
-   column means. This is the step that gets skipped, and skipping it is where almost every failed query comes from.
+   names, types and keys, the allowed values and value ranges that were captured, and a description of what each
+   column means where the database or Semantic Intelligence has one. This is the step that gets skipped, and
+   skipping it is where almost every failed query comes from.
 4. `qs_run_query` — the SELECT.
 
 Each database's `si_state` on the connector list tells you how much Semantic Intelligence has run on it.
 When a database is marked `schema_intelligence`, the table schema carries curated descriptions, semantic types
-and sample values — trust them as given. `captured_schema` is bare structure; `live_schema` means the database
-is not captured, so the tool reads names and types off the live database for you. In all three cases the
-answer is authoritative for that table; never substitute a column name you remember from elsewhere.
+and sample values — trust them as given. `captured_schema` is the captured structure (types, keys, indexes); on
+plans with **Context management** the table schema there also carries allowed values, value ranges and the
+database's own descriptions wherever they were captured. `live_schema` means the database is not captured, so the
+tool reads names and types off the live database for you. In all three cases the answer is authoritative for
+that table; never substitute a column name you remember from elsewhere.
 
 If a query fails with an unknown column or table, the error already contains the table's real columns or the
 closest table names. Use them. Do not try a second guess.
@@ -68,8 +71,13 @@ Dialect reminders by engine (the connector row tells you the engine):
 
 ## 3. Reading a result
 
-- `is_truncated` true and `truncated_by` tell you rows were left out and why. Say so to the user; do not
-  present a partial result as complete.
+- `is_truncated` true and `diagnostics.truncated_by` tell you rows were left out and why. Say so to the user; do
+  not present a partial result as complete.
+- `more`, when present, says what this answer left out and the exact call that gets it. Read it before you decide
+  the next call. On plans with **Result analysis** a cut result names the hold path there (section 4).
+- `also_available`, when present, is one note about this reply, for example what this organization's plan can
+  do (on the first reply of a session), a tool that fits the result you just got, or a warning that the data
+  allowance is running low. When it names a tool that fits the user's question, use it or offer it to the user.
 - Shape the reply before you ask for it: `columns` returns only the columns you need, `max_tokens` bounds the
   reply to what your context can hold, `max_cell_chars` trims long text cells. Smaller replies cost less of the
   allowance and leave room for the answer. (Plans with **Context management**; on other plans the inputs are
@@ -98,10 +106,34 @@ premature aggregation), then slice, rank, pivot and compare locally for the rest
 - `group_by` + `aggregate` with `hold=true` returns the totals in the same call as the hold — one round trip
   for "give me the breakdown and keep the detail."
 
+When a reply was cut (`is_truncated` true; `more` says which limit cut it and how many rows the reply holds), do
+not read the rest by running the source query again in slices. Take the hold path:
+
+1. Call `qs_run_query` again with the same `connector_id`, `database` and `sql`, plus `hold=true` (for a saved
+   query: `qs_run_saved_query` with the same `saved_query_id` and `parameters`, plus `hold=true`). The reply
+   carries `held.result_id` and `held.expires_at`, or `held_refused` with a `code` and a `detail` when the
+   Network Agent cannot keep the result.
+2. Read on with `qs_result op=page`: `result_id` = that `held.result_id`, `offset` = the number of rows you
+   already have, `limit` = the rows you want per page. Or ask the whole result a question with
+   `qs_result op=query`: the same `result_id`, and `sql` = a SELECT in which the held result is a table named by
+   its `result_id` (`SELECT region, count(*) FROM w_0123456789abcdef GROUP BY 1`, with the real `result_id` in
+   place of `w_0123456789abcdef`).
+3. When the whole result is not needed, narrow the statement instead: a WHERE clause, fewer columns or an
+   aggregate.
+
 On **Deeper analysis** plans the engine also runs four analyses for you — reach for them before writing your own
-statistics: `qs_result op=anomalies` (values and periods that break the pattern), `op=segments` (natural groups
-in the data), `op=compare` (two held results side by side, statistically), `op=diff` (what changed between two
-runs of the same query).
+statistics. Each is a tool of its own and works on a held result: run the statement with `hold=true` first, then
+pass the `held.result_id` of that reply.
+
+| The user asks | Call | Arguments |
+|---|---|---|
+| what is unusual, what spiked or dropped, when something changed in a series over time | `qs_find_anomalies` | `result_id`, `time_col` (the date, timestamp or sequence column), `value_col` (the numeric column); optional `sensitivity` (0 to 1) |
+| what kinds of rows there are, how customers, orders or products group, which rows are alike | `qs_segment_rows` | `result_id`; optional `columns` (the numeric columns to group on; omitted: every numeric column), `k` (a fixed number of segments; omitted: the best fit) |
+| whether two groups really differ, or the difference is only noise | `qs_compare_groups` | `metric_col` (the column to compare), plus either `result_id` + `split_col` + `values` (exactly two values of that column, as text) for two groups inside one held result, or `result_id_a` + `result_id_b` for two held results; optional `test` |
+| what changed between two runs of a query, which rows were added, removed or changed | `qs_diff_results` | `result_id_a` (the earlier result), `result_id_b` (the later one, same columns), `key_cols` (the columns that identify a row) |
+
+Each returns a small answer with a one-sentence `summary` you can quote, never the rows; follow up on a flagged
+point, a segment or a changed key with `qs_result op=query` on the same held result.
 
 A follow-up that comes back `MCP_RESULT_EXPIRED` means the result is no longer held; run the source query again
 with `hold=true`. `MCP_WINDOW_SQL_REJECTED` means the follow-up was not one read-only SELECT over held results.
@@ -113,10 +145,13 @@ with `hold=true`. `MCP_WINDOW_SQL_REJECTED` means the follow-up was not one read
   allowance; only the reply's bytes count, like every reply. It still runs on the customer's database, so ask
   before forcing it).
 - `qs_run_query` with `mode=profile` profiles the *result* of a query instead of a whole table; `mode=quality`
-  returns a data-quality report (nulls, duplicates, outliers) — statistics, not rows. Both belong to plans with
-  **Result analysis**.
+  (plans with **Deeper analysis**) returns a data-quality report (nulls, duplicates, outliers) — statistics, not
+  rows. `mode=profile` belongs to plans with **Result analysis**.
 - `qs_get_relationships` — the joins between tables, formal keys first, then discovered ones with a confidence.
-  Use it instead of guessing join columns. `qs_discover_relationships` runs a fresh discovery when none are
+  Use it instead of guessing join columns. `evidence.executions` on an observed relationship is how often that join
+  was executed on the database; `evidence.marker=application` means the application's own SQL ran it, `marker=frequency`
+  means sustained use by any caller (`evidence.class` says which). Prefer application-marked joins when several paths
+  exist. `qs_discover_relationships` runs a fresh discovery when none are
   recorded (Analyze scope; the discovery is free, no credits and no allowance, but it does work on the database,
   so ask first).
 - `qs_data_freshness` — the newest timestamp in a table; pass it back as `since_value` on `qs_run_query` to read
@@ -125,8 +160,10 @@ with `hold=true`. `MCP_WINDOW_SQL_REJECTED` means the follow-up was not one read
 ### Semantic Intelligence
 
 `qs_get_si_status` tells you whether Semantic Intelligence has run on a database and how complete it is. When a
-database answers `captured_schema` (structure only) or `not_captured`, the descriptions, semantic types and
-enum values that make your SQL right first time are missing. If the key carries the **Analyze** scope:
+database answers `captured_schema` or `not_captured`, the AI descriptions and semantic types that make your SQL
+right first time are missing (a captured database still gives you the structure and, on plans with **Context
+management**, the allowed values, value ranges and database descriptions that were captured). If the key carries
+the **Analyze** scope:
 
 - `qs_setup_si` captures the database and queues the analysis; `qs_request_si_analysis` re-runs it for tables
   that changed. Both spend the organization's AI credits and data allowance — tell the user what will run and
@@ -172,7 +209,7 @@ writes to a database under any of them — the Network Agent accepts SELECT only
 | Permission | Lets you | Tools |
 |---|---|---|
 | **Read** (always on) | browse connectors, schemas, relationships, saved queries and alert rules — no row data | the list / schema / `qs_get_*` tools, `qs_find_tables`, `qs_result op=windows`, `qs_alerts` |
-| **Run queries** (`execute`) | run SELECTs and saved queries, hold results and query them, read freshness, propose an alert rule | `qs_run_query`, `qs_run_saved_query`, `qs_result`, `qs_data_freshness`, `qs_create_alert_rule` |
+| **Run queries** (`execute`) | run SELECTs and saved queries, hold results, query and analyse them, read freshness, propose an alert rule | `qs_run_query`, `qs_run_saved_query`, `qs_result`, `qs_find_anomalies`, `qs_segment_rows`, `qs_compare_groups`, `qs_diff_results`, `qs_data_freshness`, `qs_create_alert_rule` |
 | **Analyze** | start work on the organization's databases: Semantic Intelligence runs (these spend credits and allowance), fresh profiles and relationship discovery (free) | `qs_setup_si`, `qs_request_si_analysis`, `qs_get_task_status`, `qs_profile_table` / `qs_discover_relationships` with `force_refresh` |
 
 - `MCP_SCOPE_REQUIRED` means the key lacks the permission for that tool. Do not retry or look for a workaround:
@@ -198,15 +235,29 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
   reliable source of column names and case. Names that look obvious from a vendor's documentation are the ones
   that fail.
 - Which schema tool: a table name you already know goes to `qs_get_table_schema`; browsing a small database
-  goes to `qs_get_connector_schema`; a need whose table name you do not know goes to `qs_find_tables`. Querying
-  the catalogue (INFORMATION_SCHEMA, sys.*, pg_catalog) returns bare structure and costs allowance; the schema
-  tools return columns, keys and descriptions in one call.
+  goes to `qs_get_connector_schema`; a need whose table name you do not know goes to `qs_find_tables`.
+- A catalogue statement (INFORMATION_SCHEMA, sys.*, pg_catalog, `DESCRIBE`, `SHOW COLUMNS`) runs, but its rows are
+  structure only and cost allowance; `qs_get_table_schema` returns the columns, keys, allowed values and
+  descriptions in one call. On plans with **Context management**, a catalogue statement that names exactly one
+  captured table (`TABLE_NAME = '…'`, `OBJECT_ID('…')`, `DESCRIBE x`, `SHOW COLUMNS FROM x`) comes back with
+  `captured_schema` attached: what `qs_get_table_schema` returns for that table, read from the stored capture.
+  Write the next statement from it, and call `qs_get_table_schema` directly for any other table.
+- A catalogue statement that searches by one name pattern (a single `LIKE` on a table name or a column name, or
+  `SHOW TABLES LIKE '…'`) comes back, on the same plans and on a captured database, with `table_matches`
+  attached: the captured tables that match the words of the pattern on their table names, column names or
+  descriptions, best match first, each with why it matched, and `next_step`, the `qs_get_table_schema` call on
+  the top match. Those matches are by name only. `qs_find_tables` (`connector_id`, `database`, `q`) also searches
+  by meaning and takes a few words, a question or part of a name, so call it directly the next time you look
+  for a table. Nothing is attached when the statement cannot be read with certainty or nothing matches; the
+  statement runs and its rows are the same either way.
 - `si_state = not_captured` on a database is not an error: the schema tools answer from the live database
   (`live_schema`); `qs_get_si_status` / `qs_get_relationships` answer `MCP_DATABASE_NOT_CAPTURED` there by design.
 - The row count you get is the plan's limit, not the table's size; `preview_limit_clamped` tells you it was
   clamped. Use `mode=shape` or an aggregate for the real figure.
 - The preview you see is not the held result: with `hold=true` the Network Agent keeps **every** row, so
   `qs_result op=query` can aggregate over the full set even when the reply showed 1,000.
+- The four analysis tools (`qs_find_anomalies`, `qs_segment_rows`, `qs_compare_groups`, `qs_diff_results`) take
+  a `result_id`, never SQL or a table name: hold the result first, then pass its `held.result_id`.
 - Held results expire on a timer (minutes, longer on bigger plans) and are released when the Network Agent
   restarts; `MCP_RESULT_EXPIRED` means re-run with `hold=true`, not that anything is broken.
 - Error messages already carry the fix: `unknown_column` lists the real columns, a wrong table lists similar
@@ -221,11 +272,16 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
 ## 11. Do not
 
 - Guess a column or table name — read the table schema.
+- Query the catalogue for a table's columns — `qs_get_table_schema` answers in one call.
+- Search the catalogue with `LIKE` for a table or a column — `qs_find_tables` finds it by name or by meaning in
+  one call.
 - Pull a whole table to count or sum it — aggregate in SQL.
+- Page a cut result by running the source query again in slices — narrow the statement, or on plans with
+  Result analysis hold it once and read the held result.
 - Retry the same failing statement.
 - Loop on an offline agent or an exhausted allowance.
 - Present a truncated or sampled result as exact.
 - Rely on a remembered list of connectors, databases or tables — `qs_list_connectors` and the schema tools are
   the only current source.
 
-<!-- querystreams-playbook v2026.11.06.1 -->
+<!-- querystreams-playbook v2026.11.12.1 -->
