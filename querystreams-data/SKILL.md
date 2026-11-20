@@ -4,7 +4,7 @@ description: Use this skill whenever Query Streams MCP tools (qs_list_connectors
 compatibility: Requires a Query Streams MCP connection (https://mcp.querystreams.com/mcp) with at least the Read and Run scopes.
 metadata:
   author: querystreams
-  version: "2026.11.12.1"
+  version: "2026.11.15.1"
   homepage: https://querystreams.com/docs/
 ---
 
@@ -154,6 +154,10 @@ with `hold=true`. `MCP_WINDOW_SQL_REJECTED` means the follow-up was not one read
   exist. `qs_discover_relationships` runs a fresh discovery when none are
   recorded (Analyze scope; the discovery is free, no credits and no allowance, but it does work on the database,
   so ask first).
+- `qs_join_path` — how to get from one table to another: the shortest path of stored keys, each join with its
+  column pairs (`on`), its direction and where the key came from (`class`: declared, confirmed, observed, guessed).
+  Use its `on` lines as they are; a composite key has more than one. `parent_to_child` can multiply rows: aggregate
+  before joining, or say so. When it finds no path, read what it searched before guessing a join.
 - `qs_data_freshness` — the newest timestamp in a table; pass it back as `since_value` on `qs_run_query` to read
   only what changed.
 
@@ -176,6 +180,54 @@ the **Analyze** scope:
 Without Analyze, say once that an administrator can run Semantic Intelligence from Query Streams and continue
 with the live schema.
 
+### What the organisation has taught
+
+People in the organisation teach Query Streams rules and meanings ("an order is closed when status is C or X").
+On plans with **Context management** these facts reach you three ways:
+
+- `qs_get_table_schema` carries `knowledge` (the facts of that table and its columns) and `database_knowledge`
+  (the rules of the database). A table marked as replaced or historical says so in `marked`: query the table it
+  names instead, or stay before the date it gives.
+- `qs_find_tables` carries the facts of its hits.
+- `qs_knowledge` searches them by words (`query`), lists them (no `query`), or returns one (`fact_id`).
+
+Apply a taught fact as written and tell the user which fact you applied. A fact is the organisation's own word:
+it outranks a guess from a column name. `qs_knowledge` only reads.
+An empty answer is an answer: nothing has been taught yet, nothing matched, or learning is switched off.
+
+### Teaching (keys with the Teach scope)
+
+When the user states a rule about their data ("an order is closed when status is C or X"), or a query shows what a
+column's values mean or how well two tables join, propose it so the organisation keeps it:
+
+- `qs_propose_knowledge` — one fact per call, in the user's own words. `kind` decides what happens:
+  a join (`join_reliability`) is measured by Query Streams and is in force at once; a column's meaning with `values`
+  is checked against the column (a value that is not there refuses the proposal) and then waits for a person like
+  every other kind: `awaiting_approval` with `approval.review_url`. Tell the user the fact is proposed, not taught,
+  and give them the link: nothing is served to any client until a person approves. `approval.by` says whose click
+  it waits for. Name a table and a column as `qs_get_table_schema` prints them.
+- `qs_knowledge_proposals` — what you proposed and its state; the outcome of a check that was still running. It
+  also names, in `recently_decided`, your proposals that were decided in the last four minutes, whatever `state`
+  you asked for.
+- `qs_dispute_knowledge` — when a result contradicts a taught fact, report it with the fact's id. A table, column
+  or join fact is checked at once (by a key that may run queries; otherwise it is flagged for a person unchecked);
+  a rule stays in force and is flagged for a person.
+
+When `qs_propose_knowledge` answers `active` with `approval.where` = `ai_client`, the user approved the proposal
+in a dialog of their own client: say that it is in force. When it answers `awaiting_approval`, it was not approved
+there: give the user the link in `approval.review_url`. Do not propose the same fact again to make the question
+come back unless the user asks for it.
+
+Never propose a guess, and never propose the same fact again in other words to get past "already known".
+When the answer carries `close_to`, read those facts with `qs_knowledge` and tell the user whether the new one
+repeats, changes or contradicts them: the person who approves decides between them. `replaces_fact_id` names the
+taught fact a proposal would replace once it is approved.
+Write a fact in the language the user stated it in; it is stored and served word for word and never translated.
+`MCP_TEACH_LIMIT_REACHED` says which limit was met: proposals a day for the key or for the organisation and
+reports a day for the key (each with the time the next one is possible), proposals that wait for a person, or the
+most facts an organisation may hold. `teaching_off` in an answer means the organisation, or Query Streams, has
+switched teaching off, and `notice` says which. Tell the user either once and do not retry.
+
 ## 6. Repeating questions
 
 - `qs_list_saved_queries` + `qs_run_saved_query` — the organization's saved and federated queries, parameters
@@ -193,6 +245,7 @@ with the live schema.
 | `MCP_AGENT_QUERY_ERROR … class=syntax` | the SQL is not valid for this engine | check the dialect table above |
 | `MCP_AGENT_NOT_CONNECTED` / `unstable` | the Network Agent is offline or reconnecting | tell the user; do not retry in a loop |
 | `MCP_QUERY_TIMEOUT` | the query ran past its time limit | narrow it (WHERE, fewer columns) or size it with `mode=shape` |
+| `MCP_QUERY_CANCELLED` | somebody stopped the query before it finished (`qs_cancel_query`, or the list of running queries in Query Streams) | tell the user it was stopped; run it again only when asked |
 | `MCP_FEATURE_NOT_INCLUDED` | the plan does not include that capability | continue without it and tell the user once what it would add |
 | `MCP_SCOPE_REQUIRED` / `MCP_CONNECTOR_NOT_ALLOWED` | the key lacks that permission, or the connector is outside the app's approved set | tell the user which permission or connector to add; never work around it |
 | `MCP_DATA_REALM_EXHAUSTED` / `MCP_USER_BYTES_CAP` / `MCP_USER_CALL_CAP` | the allowance or a cap is used up | stop and tell the user once; the message says how to raise it |
@@ -201,16 +254,36 @@ with the live schema.
 
 Never retry an identical failing query. Every refusal already tells you what to change.
 
+### Stopping a query
+
+A query keeps running on the database until it ends or is stopped. Most AI clients do not tell the server when
+the user presses Stop, so a query nobody waits for any more can go on for minutes.
+
+- `qs_list_running_queries` shows what is running right now through MCP and the REST API, with each request id,
+  connector, age and state (`scope=organization` shows everyone's; `can_stop` says which ones this key may stop).
+  No statement text is shown.
+- `qs_cancel_query request_id=…` stops one; `all=true` stops everything this key is running. The request id is
+  also printed in every timeout and error text. The answer says what came of it: `stopped` (with `on_database`:
+  `confirmed`, `nothing_running` or `not_confirmed`), `already_finished`, `stop_sent` when the Network Agent
+  cannot report back, `not_running` when nothing with that id is running for this key's owner.
+- When the user says stop, or a question is abandoned for a better one, stop the query that is still running
+  before starting the next: a heavy statement left behind slows the database for everyone.
+- After `MCP_QUERY_TIMEOUT` the query has already been told to stop. Look at `qs_list_running_queries` before
+  sending the same heavy statement again.
+- Both tools are on every plan and are not counted against a daily call cap. A held result is not a running
+  query: `qs_result_release` frees one.
+
 ## 8. What your key is allowed to do
 
-Every key or connected app carries up to three permissions, chosen by the person who created it. Nothing
+Every key or connected app carries up to four permissions, chosen by the person who created it. Nothing
 writes to a database under any of them — the Network Agent accepts SELECT only.
 
 | Permission | Lets you | Tools |
 |---|---|---|
-| **Read** (always on) | browse connectors, schemas, relationships, saved queries and alert rules — no row data | the list / schema / `qs_get_*` tools, `qs_find_tables`, `qs_result op=windows`, `qs_alerts` |
+| **Read** (always on) | browse connectors, schemas, relationships, saved queries and alert rules — no row data | the list / schema / `qs_get_*` tools, `qs_find_tables`, `qs_join_path`, `qs_knowledge`, `qs_result op=windows`, `qs_alerts` |
 | **Run queries** (`execute`) | run SELECTs and saved queries, hold results, query and analyse them, read freshness, propose an alert rule | `qs_run_query`, `qs_run_saved_query`, `qs_result`, `qs_find_anomalies`, `qs_segment_rows`, `qs_compare_groups`, `qs_diff_results`, `qs_data_freshness`, `qs_create_alert_rule` |
 | **Analyze** | start work on the organization's databases: Semantic Intelligence runs (these spend credits and allowance), fresh profiles and relationship discovery (free) | `qs_setup_si`, `qs_request_si_analysis`, `qs_get_task_status`, `qs_profile_table` / `qs_discover_relationships` with `force_refresh` |
+| **Teach** | propose a fact about the organization's data for a person to approve, read what became of your proposals, report a taught fact that looks wrong (plans with Context management) | `qs_propose_knowledge`, `qs_knowledge_proposals`, `qs_dispute_knowledge` |
 
 - `MCP_SCOPE_REQUIRED` means the key lacks the permission for that tool. Do not retry or look for a workaround:
   tell the user which permission it needs and that the key's owner can add it on the Query Streams MCP page
@@ -220,6 +293,9 @@ writes to a database under any of them — the Network Agent accepts SELECT only
 - Analyze is deliberately optional because its tools start work on the organization's databases without a
   person in the loop, and Semantic Intelligence runs spend credits and allowance — that is why this playbook
   says to confirm with the user before calling them.
+- Teach is off on every key until its owner switches it on, and its three tools are listed only to a key that
+  has it. Proposing a join, or a column's meaning with `values`, reads the database, so those two also need
+  Run queries.
 
 ## 9. The data allowance
 
@@ -268,6 +344,9 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
   on the customer's database, so ask first too.
 - Every reply is billed to the organization's data allowance, including schema reads and held-result pages;
   errors are not.
+- A taught fact reaches a table reply within about four minutes of being changed; `qs_knowledge` has it at once.
+- A fact that a person approved is in `qs_knowledge` at once and on a table reply within about four minutes;
+  calling `qs_knowledge_proposals` shows it sooner.
 
 ## 11. Do not
 
@@ -284,4 +363,4 @@ result instead of re-running. When a reply carries a `capacity_low` note, pass i
 - Rely on a remembered list of connectors, databases or tables — `qs_list_connectors` and the schema tools are
   the only current source.
 
-<!-- querystreams-playbook v2026.11.12.1 -->
+<!-- querystreams-playbook v2026.11.15.1 -->
